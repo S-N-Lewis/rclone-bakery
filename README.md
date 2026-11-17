@@ -41,6 +41,18 @@ npm start     # 启动后自动打开 http://localhost:5321
 每个任务可「立即运行」或「dry-run 预览」（`--dry-run --verbose`，只显示将发生什么，不做任何改动）。
 「③ 运行记录」实时流式显示日志，并保留每次运行的开始/结束/传输量/退出码。
 
+## v0.2 新增（参考 rclone 官方 WebUI 功能面 + 自有优化）
+
+- **macOS 系统通知**：每次备份/恢复结束弹系统通知（成功/失败+传输量），`NO_NOTIFY=1` 可关
+- **上传限速**：任务级 `--bwlimit`（填 `10MiB/s`、`500KiB/s` 或纯字节/秒，自动归一化）
+- **备份目录浏览与一键恢复**：「④ 备份目录」列出任务的所有 `backup/<日期>` 快照（文件数+大小），
+  可把某天快照 `rclone copy` 回源文件夹（只补旧文件、不删新增，支持 dry-run）——这是官方 WebUI 没有的闭环功能
+- **远端文件浏览器**：只读浏览 `remote:path`（`rclone lsjson`），确认备份结果用
+- **运行耗时**：运行历史新增耗时列
+- 修复/工程：`rclone size --json`（键是 count 不是 files）、`--bwlimit` 不接受 `/s` 后缀
+
+> 注：rclone/rclone-webui-react 已归档，官方继任为 [rclone/rclone-web](https://github.com/rclone/rclone-web)（`rclone gui`）。
+
 ## 定时方案的选择：进程内 scheduler（不用 launchd）
 
 实现：`setInterval` 每 30 秒检查一次到点任务（`lib/scheduler.js`），触发即运行。

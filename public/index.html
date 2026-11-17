@@ -78,6 +78,7 @@ label { font-size:12px; color:var(--sub); display:block; margin-bottom:3px; }
       </span>
     </div>
     <div class="field"><label>保留删除/修改的天数（--backup-dir，0 = 不保留）</label><input id="f_retention" type="number" value="30" min="0" max="3650" style="width:100px"></div>
+    <div class="field"><label>上传限速（可选，如 10MiB/s）</label><input id="f_bandwidth" style="width:140px" placeholder="不限"></div>
   </div>
   <button class="pri" onclick="createTask()">创建任务</button>
   <button onclick="toggleForm()">取消</button>
@@ -85,8 +86,26 @@ label { font-size:12px; color:var(--sub); display:block; margin-bottom:3px; }
 
 <h2>③ 运行记录</h2>
 <div class="card">
-  <table id="runsTable"><thead><tr><th>时间</th><th>任务</th><th>类型</th><th>状态</th><th>传输量</th><th>退出码</th><th></th></tr></thead><tbody></tbody></table>
+  <table id="runsTable"><thead><tr><th>时间</th><th>任务</th><th>类型</th><th>状态</th><th>传输量</th><th>耗时</th><th>退出码</th><th></th></tr></thead><tbody></tbody></table>
   <div id="log" style="margin-top:10px">（点某条运行记录的「查看日志」实时查看输出）</div>
+</div>
+
+<h2>④ 备份目录与恢复</h2>
+<div class="card">
+  <div class="row">
+    <select id="bk_task" style="width:auto" onchange="loadBackups()"></select>
+    <button onclick="loadBackups()">刷新</button>
+    <button onclick="browseRemote()">浏览远端…</button>
+    <span class="muted">选择任务查看它的 backup/&lt;日期&gt; 目录，可一键把某天的快照恢复回源文件夹</span>
+  </div>
+  <div id="backupsBox" style="margin-top:10px"></div>
+</div>
+
+<div id="remoteModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10">
+  <div class="card" style="max-width:640px;margin:60px auto;max-height:70vh;overflow:auto">
+    <div class="row"><b>远端浏览</b><input id="rm_path" class="wide" placeholder="gdrive1:"><button onclick="goRemote()">跳转</button><button onclick="$('#remoteModal').style.display='none'">关闭</button></div>
+    <div id="remoteBox" style="margin-top:8px"></div>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -150,12 +169,13 @@ async function createTask() {
   const body = {
     name: $('#f_name').value, src: $('#f_src').value, dest: $('#f_dest').value,
     retentionDays: Number($('#f_retention').value),
+    bandwidth: $('#f_bandwidth').value.trim() || undefined,
     schedule: { type, time: $('#f_time').value, weekday: type === 'weekly' ? Number($('#f_weekday').value) : undefined },
   };
   try {
     await api('/api/tasks', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    toast('任务已创建'); toggleForm(); loadTasks();
-    ['f_name','f_src','f_dest'].forEach(id => $('#'+id).value = '');
+    toast('任务已创建'); toggleForm(); loadTasks(); $('#bk_task').innerHTML = ''; loadBackups();
+    ['f_name','f_src','f_dest','f_bandwidth'].forEach(id => $('#'+id).value = '');
   } catch (e) { toast(e.message, true); }
 }
 function schedText(t) {
@@ -164,8 +184,10 @@ function schedText(t) {
   const extra = s.type === 'weekly' ? ['周日','周一','周二','周三','周四','周五','周六'][Number(s.weekday)] + ' ' : '';
   return (s.type === 'daily' ? '每天 ' : '每周 ') + extra + (s.time || '');
 }
+let apiCacheTasks = null;
 async function loadTasks() {
   const { tasks, lastRunDate } = await api('/api/tasks');
+  apiCacheTasks = { tasks };
   const box = $('#tasksBox');
   if (!tasks.length) { box.innerHTML = '<span class="muted">还没有任务，点「＋ 新建任务」创建一个</span>'; return; }
   box.innerHTML = '<table><thead><tr><th>名称</th><th>源 → 目标</th><th>计划</th><th>保留</th><th>今天已跑</th><th class="actions">操作</th></tr></thead><tbody>' +
@@ -191,7 +213,7 @@ async function run(id, dryRun) {
 async function delTask(id, name) {
   if (!confirm(`删除任务「${name}」？（不影响已备份的数据）`)) return;
   await api(`/api/tasks/${id}`, { method:'DELETE' });
-  loadTasks();
+  loadTasks(); $('#bk_task').innerHTML = ''; loadBackups();
 }
 
 // ---- 运行记录 ----
@@ -207,9 +229,15 @@ async function loadRuns() {
     <td>${r.dryRun ? '<span class="badge warn">dry-run</span>' : '真实备份'}</td>
     <td>${statusBadge(r)}</td>
     <td>${esc(r.bytes || '—')}</td>
+    <td>${r.durationSec != null ? fmtDur(r.durationSec) : '—'}</td>
     <td>${r.exitCode === null ? '—' : r.exitCode}</td>
     <td><button onclick="watchRun('${r.id}')">查看日志</button></td>
-  </tr>`).join('') : '<tr><td colspan="7" class="muted">暂无运行记录</td></tr>';
+  </tr>`).join('') : '<tr><td colspan="8" class="muted">暂无运行记录</td></tr>';
+}
+function fmtDur(sec) {
+  if (sec < 60) return sec + ' 秒';
+  const m = Math.floor(sec / 60), s2 = sec % 60;
+  return m + ' 分 ' + s2 + ' 秒';
 }
 function watchRun(id) {
   clearInterval(pollTimer);
@@ -226,7 +254,52 @@ function watchRun(id) {
   pollTimer = setInterval(tick, 1000);
 }
 
-loadRemotes(); loadTasks(); loadRuns();
+async function loadBackups() {
+  const sel = $('#bk_task');
+  if (sel.options.length === 0) {
+    const { tasks } = await api('/api/tasks');
+    sel.innerHTML = tasks.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('') || '<option value="">（暂无任务）</option>';
+    if (!tasks.length) { $('#backupsBox').innerHTML = '<span class="muted">先创建任务</span>'; return; }
+  }
+  const id = sel.value;
+  if (!id) return;
+  const { backups } = await api('/api/backups/' + id);
+  $('#backupsBox').innerHTML = backups.length ? '<table><thead><tr><th>备份日期</th><th>文件数</th><th>大小</th><th class="actions">操作</th></tr></thead><tbody>' +
+    backups.map(b => `<tr>
+      <td><b>${esc(b.date)}</b></td>
+      <td>${b.files ?? '—'}</td>
+      <td>${b.bytes != null ? (b.bytes > 1048576 ? (b.bytes/1048576).toFixed(1)+' MiB' : b.bytes+' B') : '—'}</td>
+      <td class="actions">
+        <button class="pri" onclick="restore('${esc(b.date)}', false)">恢复到源</button>
+        <button onclick="restore('${esc(b.date)}', true)">dry-run</button>
+      </td></tr>`).join('') + '</tbody></table>'
+    : '<span class="muted">该任务还没有备份目录（开启保留天数并运行过、且有删除/修改时才会生成）</span>';
+}
+async function restore(date, dryRun) {
+  if (!dryRun && !confirm(`把 ${date} 的备份快照复制回源文件夹？
+（rclone copy：只补回旧文件，不删除后来新增的文件）`)) return;
+  const id = $('#bk_task').value;
+  const { runId } = await api(`/api/backups/${id}/restore`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ date, dryRun }) });
+  toast(dryRun ? '恢复预览已启动' : '恢复已启动');
+  watchRun(runId); loadRuns();
+}
+async function goRemote(path) {
+  try {
+    const data = await api('/api/remote/ls?path=' + encodeURIComponent(path ?? $('#rm_path').value));
+    $('#rm_path').value = data.path;
+    const rows = [{name:'📁 ..', path:data.parent, dir:true}].concat(data.entries.map(e => ({name:(e.isDir?'📁 ':'📄 ')+e.name+(e.isDir?'':' ('+ (e.size>=1048576?(e.size/1048576).toFixed(1)+'MiB':e.size+'B') +')'), path:e.path, dir:e.isDir})));
+    $('#remoteBox').innerHTML = rows.map(r =>
+      `<div style="cursor:${r.dir?'pointer':'default'};padding:2px 4px" ${r.dir?`onclick="goRemote('${esc(r.path).replace(/'/g,"\'")}')"`:''}>${esc(r.name)}</div>`).join('');
+  } catch (e) { toast(e.message, true); }
+}
+function browseRemote() {
+  $('#remoteModal').style.display = 'block';
+  const sel = $('#bk_task');
+  const { tasks } = apiCacheTasks || {};
+  if (tasks) { const t = tasks.find(x => x.id === sel.value); if (t) $('#rm_path').value = t.dest; }
+  goRemote($('#rm_path').value || $('#rm_path').placeholder);
+}
+loadRemotes(); loadTasks(); loadRuns(); loadBackups();
 setInterval(loadRuns, 10000);
 </script>
 </body>
