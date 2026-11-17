@@ -224,7 +224,7 @@ app.get('/api/runs/:id', (req, res) => {
 // ---------- 启动 ----------
 store.ensureDirs();
 app.listen(PORT, () => {
-  console.log(`DriveBackup 已启动: http://localhost:${PORT}`);
+  console.log(`🥖 Bakery 已启动: http://localhost:${PORT}`);
   scheduler.startScheduler();
   if (process.env.NO_BROWSER !== '1') {
     exec(`open http://localhost:${PORT}`, err => {

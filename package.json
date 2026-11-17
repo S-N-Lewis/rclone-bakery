@@ -1,8 +1,8 @@
 {
-  "name": "drivebackup",
+  "name": "rclone-bakery",
   "version": "0.1.0",
   "private": true,
-  "description": "rclone 单向备份傻瓜式 Web 工具",
+  "description": "Bakery 🥖 — 傻瓜式 rclone 单向备份 Web 工具 (Foolproof one-way rclone backup with web UI)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

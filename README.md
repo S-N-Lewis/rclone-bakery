@@ -1,6 +1,8 @@
-# DriveBackup
+# 🥖 Bakery（rclone-bakery）
 
-把系统的 rclone 包装成傻瓜式**单向备份**工具（macOS 本地网页应用，Node.js + vanilla JS，中文界面）。
+**Foolproof one-way rclone backup with a friendly web UI.** 把系统的 rclone 包装成傻瓜式**单向备份**工具（macOS / Linux 本地网页应用，Node.js + vanilla JS，中文界面）。
+
+每天出炉一份带日期标签的新鲜备份：删除/修改的文件自动落进 `backup/<日期>` 烤盘格，像面包房一样按天取用。
 
 原理：对每个任务执行 `rclone sync 源 → 目标`（单向镜像）。开启"保留删除/修改"后，
 被删除或被改动的文件会先移动到 `--backup-dir`（`remote:backup/<日期>/<目标名>`，
