@@ -101,7 +101,11 @@ function validTask(body) {
   if (schedule.type !== 'manual' && !/^\d{2}:\d{2}$/.test(schedule.time || '')) return { error: '计划时间格式应为 HH:mm' };
   if (schedule.type === 'weekly' && (schedule.weekday === undefined || Number(schedule.weekday) < 0 || Number(schedule.weekday) > 6)) return { error: '每周计划需要指定星期几（0=周日 … 6=周六）' };
   if (!(retentionDays >= 0 && retentionDays <= 3650)) return { error: '保留天数应在 0-3650 之间（0 = 不保留删除/修改）' };
-  return { task: { name, src, dest, schedule, retentionDays } };
+  const bandwidth = String(body.bandwidth || '').trim();
+  if (bandwidth && !/^\d+(\.\d+)?\s*[KkMmGgTt]?[iI]?[Bb]?(\/?[Ss])?$/.test(bandwidth)) {
+    return { error: '限速格式示例：10MiB/s、500KiB/s 或纯数字（字节/秒）' };
+  }
+  return { task: { name, src, dest, schedule, retentionDays, bandwidth } };
 }
 
 app.get('/api/tasks', (req, res) => {
@@ -144,6 +148,65 @@ app.post('/api/tasks/:id/run', (req, res) => {
       else if (removed.length) console.log('[prune] 已清理过期备份目录:', removed.join(', '));
     }), 5000);
   }
+});
+
+// ---------- 远端文件浏览器（学官方 WebUI 的 remote explorer，简化成只读） ----------
+app.get('/api/remote/ls', (req, res) => {
+  const p = String(req.query.path || '').trim();
+  if (!p || !p.includes(':')) return res.status(400).json({ error: '路径必须是 remote:path 形式' });
+  execFile(RCLONE, ['lsjson', '--max-depth', '1', p], { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+    if (err) return res.status(400).json({ error: (err.message || '').split('\n')[0] });
+    try {
+      const items = JSON.parse(stdout).map(e => ({
+        name: e.Name, isDir: e.IsDir, size: e.Size, modTime: e.ModTime,
+        path: p.replace(/\/+$/, '') + '/' + e.Name,
+      }));
+      const i = p.indexOf(':');
+      res.json({ path: p, remote: p.slice(0, i), parent: i !== -1 ? p.slice(0, i + 1) + (p.slice(i + 1).split('/').filter(Boolean).slice(0, -1).join('/') || '') : '/', entries: items });
+    } catch (e2) {
+      res.status(500).json({ error: '解析 lsjson 失败' });
+    }
+  });
+});
+
+// ---------- 备份目录浏览与恢复（官方 WebUI 没有的闭环功能） ----------
+app.get('/api/backups/:taskId', (req, res) => {
+  const task = store.getTasks().tasks.find(t => t.id === req.params.taskId);
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+  const i = task.dest.indexOf(':');
+  const remote = task.dest.slice(0, i);
+  const destPath = task.dest.slice(i + 1);
+  const leaf = (destPath.split('/').filter(Boolean).pop() || task.id).replace(/[^\w.-]/g, '_');
+  const backupRoot = `${remote}:backup`;
+  execFile(RCLONE, ['lsjson', '--max-depth', '1', '--dirs-only', backupRoot], (err, stdout) => {
+    if (err) return res.json({ backups: [] }); // 还没有任何备份
+    const dates = JSON.parse(stdout).filter(e => e.IsDir && /^\d{4}-\d{2}-\d{2}$/.test(e.Name)).map(e => e.Name);
+    let left = dates.length;
+    const out = [];
+    if (!left) return res.json({ backups: [] });
+    dates.forEach(date => {
+      execFile(RCLONE, ['size', '--json', `${backupRoot}/${date}/${leaf}`], (err2, stdout2) => {
+        let files = null, bytes = null;
+        if (!err2) { try { const j = JSON.parse(stdout2); files = j.count; bytes = j.bytes; } catch {} }
+        out.push({ date, files, bytes });
+        if (--left === 0) res.json({ backups: out.sort((a, b) => b.date.localeCompare(a.date)), backupRoot: `${backupRoot}/${leaf}` });
+      });
+    });
+  });
+});
+
+app.post('/api/backups/:taskId/restore', (req, res) => {
+  const task = store.getTasks().tasks.find(t => t.id === req.params.taskId);
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+  const date = String(req.body.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '日期格式应为 YYYY-MM-DD' });
+  const dryRun = !!(req.body.dryRun);
+  const i = task.dest.indexOf(':');
+  const src = `${task.dest.slice(0, i)}:backup/${date}/${(task.dest.slice(i + 1).split('/').filter(Boolean).pop() || task.id).replace(/[^\w.-]/g, '_')}`;
+  const args = ['copy', src, task.src, '-v', '--stats', '5s'];
+  if (dryRun) args.push('--dry-run');
+  const id = runner.startRawRun({ taskName: task.name, dryRun }, args, `从备份恢复 ${date} → ${task.src}`);
+  res.json({ ok: true, runId: id });
 });
 
 app.get('/api/runs', (req, res) => {
