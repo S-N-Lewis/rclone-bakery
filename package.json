@@ -1,0 +1,14 @@
+{
+  "name": "drivebackup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "rclone 单向备份傻瓜式 Web 工具",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
